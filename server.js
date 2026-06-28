@@ -81,7 +81,7 @@ app.get('/health', (_req, res) => {
 // ── POST /api/chat ────────────────────────────────────────────────
 // Body: { message: string, history?: [{role, content}] }
 app.post('/api/chat', async (req, res) => {
-  const { message, history = [] } = req.body;
+  const { message, history = [], systemPrompt } = req.body;
   if (!message?.trim()) {
     return res.status(400).json({ error: 'Kein Text übergeben.' });
   }
@@ -90,7 +90,7 @@ app.post('/api/chat', async (req, res) => {
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
-      system: SYSTEM_PROMPT,
+      system: systemPrompt || SYSTEM_PROMPT,
       messages: [
         ...history.map(h => ({ role: h.role, content: h.content })),
         { role: 'user', content: message.trim() },
