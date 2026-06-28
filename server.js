@@ -34,7 +34,7 @@ app.use(cors({
 
 app.use(express.json({ limit: '10mb' }));
 
-// ── System-Prompt ─────────────────────────────────────────────────
+// ── System-Prompts ────────────────────────────────────────────────
 const SYSTEM_PROMPT = `Du bist DENTIQUA, ein präziser KI-Assistent für zahnmedizinische Fachkräfte, \
 eingesetzt in der Zahnarztpraxis Dentelegance. Du unterstützt ZMPs (Zahnmedizinische \
 Prophylaxeassistentinnen) während laufender Behandlungen – diskret, klinisch präzise und vertrauenswürdig.
@@ -53,6 +53,25 @@ Kommunikationsregeln:
 - Bei Medikamenten: immer Wirkstoff + Handelsname + Relevanz für die Behandlung.
 - Bei unklaren klinischen Befunden: weise auf Rücksprache mit dem Zahnarzt hin.
 - Du darfst keine Diagnosen stellen, nur klinische Informationen und Protokoll-Unterstützung liefern.`;
+
+const COMMAND_PROMPT = `Du bist DENTIQUA, KI-Assistentin in der Zahnarztpraxis Dentelegance.
+Aktuelle Patientin: Kaya Merovci, UPT-Sitzung 3, Diabetes Typ 2, Rauchen.
+
+Analysiere den Sprachbefehl und antworte AUSSCHLIESSLICH mit validem JSON (kein Markdown, kein Text davor/danach):
+
+{
+  "speech": "Was du laut sagst (kurz, max 2 Sätze, Deutsch)",
+  "action": "navigate|par_entry|answer",
+  "target": "patient|par|doku|abschluss" (nur bei action=navigate),
+  "depths": [zahl,zahl,zahl] (nur bei action=par_entry, wenn 3 Zahlen genannt werden)
+}
+
+Regeln:
+- Navigation: "Patient / Übersicht / zurück" → navigate/patient | "PAR / Befund / Parodontal" → navigate/par | "Doku / Dokumentation" → navigate/doku | "Abschluss / Zusammenfassung / Protokoll" → navigate/abschluss
+- PAR-Eintrag: 3 Zahlen (z.B. "drei vier drei" oder "3 4 3") auf dem PAR-Screen → par_entry mit depths
+- Alles andere → answer (beantworte klinisch präzise, max 3 Sätze)
+- action ist immer einer der drei Werte: navigate, par_entry, answer
+- Antworte NUR mit dem JSON-Objekt`;
 
 // ── Health Check ──────────────────────────────────────────────────
 app.get('/health', (_req, res) => {
@@ -157,6 +176,41 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
     const detail = err.response?.data;
     console.error('[/api/transcribe]', status, detail || err.message);
     res.status(502).json({ error: 'ElevenLabs STT nicht erreichbar.' });
+  }
+});
+
+// ── POST /api/command ─────────────────────────────────────────────
+// Body: { text: string, page?: string }
+// Returns: { speech, action, target?, depths? }
+app.post('/api/command', async (req, res) => {
+  const { text, page = 'patient' } = req.body;
+  if (!text?.trim()) {
+    return res.status(400).json({ error: 'Kein Text übergeben.' });
+  }
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 256,
+      system: COMMAND_PROMPT,
+      messages: [{ role: 'user', content: `Aktuelle Seite: ${page}\nBefehl: ${text.trim()}` }],
+    });
+
+    let raw = response.content[0].text.trim();
+    // Strip markdown code fences if present
+    raw = raw.replace(/^```json?\s*/i, '').replace(/```\s*$/, '').trim();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = { speech: raw, action: 'answer' };
+    }
+
+    res.json(parsed);
+  } catch (err) {
+    console.error('[/api/command]', err.message);
+    res.status(502).json({ error: 'Claude API nicht erreichbar.' });
   }
 });
 
